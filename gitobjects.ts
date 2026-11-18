@@ -20,7 +20,7 @@ export const ZERO_OID = '0000000000000000000000000000000000000000';
 export const EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 const TYPE_CODES: Readonly<Record<GitObjectType, number>> = { commit: 1, tree: 2, blob: 3, tag: 4 };
-const CODE_TYPES: readonly GitObjectType[] = ['commit', 'tree', 'blob', 'tag', 'tag', 'tag', 'tag', 'tag'];
+const CODE_TYPES: Readonly<Record<number, GitObjectType>> = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
 
 /** The object id of a payload: SHA-1 over `<type> <size>\0` + bytes. */
 export function hashObject(type: GitObjectType, data: Buffer): string {
@@ -149,8 +149,18 @@ export interface CommitInfo {
   message: string;
 }
 
+const commitInfoCache = new WeakMap<Buffer, CommitInfo>();
+
 /** Parse a commit object. Header continuations (signatures) are skipped, not understood. */
 export function parseCommit(data: Buffer): CommitInfo {
+  const cached = commitInfoCache.get(data);
+  if (cached !== undefined) return cached;
+  const info = parseCommitUncached(data);
+  commitInfoCache.set(data, info);
+  return info;
+}
+
+function parseCommitUncached(data: Buffer): CommitInfo {
   const text = data.toString('utf8');
   const split = text.indexOf('\n\n');
   const header = split === -1 ? text : text.slice(0, split);
@@ -397,7 +407,9 @@ export function parsePack(store: ObjectStore, pack: Buffer): ParsedPack {
       if (base === undefined) throw new Error(`ref-delta base ${baseOid} is unknown`);
       type = base.type;
     } else {
-      type = CODE_TYPES[typeCode] as GitObjectType;
+      const mapped = CODE_TYPES[typeCode];
+      if (mapped === undefined) throw new Error(`unknown pack object type code ${typeCode}`);
+      type = mapped;
     }
     // With {info: true}, engine.bytesWritten is the number of compressed
     // bytes the inflater consumed — how far this entry reached in the pack.

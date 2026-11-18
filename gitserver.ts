@@ -205,6 +205,7 @@ interface FetchPlan {
   haves: string[];
   shallow: string[];
   deepen: number | null;
+  done: boolean;
 }
 
 interface FetchOutcome {
@@ -254,36 +255,49 @@ function planFetch(ctx: Ctx, repo: Repo, plan: FetchPlan): FetchOutcome {
 }
 
 function fetchV2(ctx: Ctx, repo: Repo, args: string[]): Buffer {
-  const plan: FetchPlan = { wants: [], haves: [], shallow: [], deepen: null };
+  const plan: FetchPlan = { wants: [], haves: [], shallow: [], deepen: null, done: false };
   for (const arg of args) {
     if (arg.startsWith('want ')) plan.wants.push(arg.slice(5).trim());
     else if (arg.startsWith('have ')) plan.haves.push(arg.slice(5).trim());
     else if (arg.startsWith('shallow ')) plan.shallow.push(arg.slice(8).trim());
     else if (arg.startsWith('deepen ')) plan.deepen = Number(arg.slice(7).trim());
+    else if (arg === 'done') plan.done = true;
   }
   const outcome = planFetch(ctx, repo, plan);
   const parts: Buffer[] = [];
-  // acknowledgments
-  parts.push(pktLine('acknowledgments\n'));
-  if (outcome.commonHaves.length === 0) {
-    parts.push(pktLine('NAK\n'));
-  } else {
-    for (const have of outcome.commonHaves) parts.push(pktLine(`ACK ${have} common\n`));
+  // Protocol v2 framing, as real git speaks it: sections inside one
+  // response are separated by DELIMITER packets, and a single flush ends
+  // the response. (A flush after the acknowledgments makes a real git
+  // client treat the response as over: "expected packfile to be sent
+  // after 'ready'".) After an explicit `done` there is no acknowledgments
+  // section at all.
+  if (!plan.done) {
+    const store = ctx.forge.objects;
+    const ready = plan.wants.every((want) => store.has(want));
+    parts.push(pktLine('acknowledgments\n'));
+    if (outcome.commonHaves.length === 0) {
+      parts.push(pktLine('NAK\n'));
+    } else {
+      for (const have of outcome.commonHaves) parts.push(pktLine(`ACK ${have}\n`));
+    }
+    if (!ready) {
+      // Negotiation continues in a later request; this response is over.
+      parts.push(flushPkt());
+      return Buffer.concat(parts);
+    }
     parts.push(pktLine('ready\n'));
+    parts.push(delimPkt());
   }
-  parts.push(flushPkt());
-  // shallow-info
   if (outcome.shallowLines.length > 0) {
     parts.push(pktLine('shallow-info\n'));
     for (const line of outcome.shallowLines) parts.push(pktLine(`${line}\n`));
-    parts.push(flushPkt());
+    parts.push(delimPkt());
   }
-  // packfile
-  if (outcome.pack !== null) {
-    parts.push(pktLine('packfile\n'));
-    parts.push(sidebandWrap(outcome.pack, 1));
-    parts.push(flushPkt());
-  }
+  // The packfile section: always sent once negotiation completes, an
+  // empty pack when nothing is new.
+  parts.push(pktLine('packfile\n'));
+  parts.push(sidebandWrap(outcome.pack ?? writePack([]), 1));
+  parts.push(flushPkt());
   return Buffer.concat(parts);
 }
 
@@ -291,7 +305,7 @@ function fetchV2(ctx: Ctx, repo: Repo, args: string[]): Buffer {
 
 function v0UploadPack(ctx: Ctx, repo: Repo): Buffer {
   const reader = new PktReader(ctx.body);
-  const plan: FetchPlan = { wants: [], haves: [], shallow: [], deepen: null };
+  const plan: FetchPlan = { wants: [], haves: [], shallow: [], deepen: null, done: true };
   // Section 1: wants and shallow negotiation.
   for (;;) {
     const packet = reader.next();
@@ -370,9 +384,11 @@ function receivePack(ctx: Ctx, repo: Repo): Buffer {
 
   const caps = new Set(capabilities.split(' ').filter((cap) => cap !== ''));
   if (!caps.has('report-status')) return Buffer.alloc(0);
-  const reportParts: Buffer[] = [pktLine(unpackError === null ? 'unpack ok' : `unpack ${unpackError}`)];
+  // Report lines are newline-terminated inside their packets: the reader
+  // joins the packet payloads and splits the text on '\n'.
+  const reportParts: Buffer[] = [pktLine(unpackError === null ? 'unpack ok\n' : `unpack ${unpackError}\n`)];
   for (const result of results) {
-    reportParts.push(pktLine(result.ok ? `ok ${result.ref}` : `ng ${result.ref} ${result.reason}`));
+    reportParts.push(pktLine(result.ok ? `ok ${result.ref}\n` : `ng ${result.ref} ${result.reason}\n`));
   }
   reportParts.push(flushPkt());
   const report = Buffer.concat(reportParts);

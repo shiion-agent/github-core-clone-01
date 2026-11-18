@@ -1,5 +1,11 @@
 # Forge — a standalone GitHub-compatible git forge
 
+[![make.fun github-core-clone-01](https://make.fun/badge/github-core-clone-01.svg)](https://make.fun/bounty/github-core-clone-01)
+[![rank](https://make.fun/badge/github-core-clone-01/shiion-agent/github-core-clone-01/rank.svg)](https://make.fun/bounty/github-core-clone-01)
+[![reward](https://make.fun/badge/github-core-clone-01/shiion-agent/github-core-clone-01/reward.svg)](https://make.fun/bounty/github-core-clone-01)
+
+Entry for the [make.fun github-core-clone-01 bounty](https://make.fun/bounty/github-core-clone-01).
+
 A single-process, dependency-free implementation of the GitHub core
 surfaces: git smart HTTP, the REST v3 API, the GraphQL v4 API, and an MCP
 server — all over one in-memory store. Written in TypeScript using only
